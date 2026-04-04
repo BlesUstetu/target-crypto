@@ -1,3 +1,6 @@
+export const config = {
+  runtime: "edge"
+};
 export default async function handler(req, res) {
   try {
     const key = process.env.OPENROUTER_API_KEY;
