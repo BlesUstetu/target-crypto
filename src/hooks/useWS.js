@@ -7,11 +7,18 @@ export default function useWS() {
   useEffect(() => {
     const run = async () => {
       try {
+        console.log("FETCH PRICE...");
+
         const r = await fetch("/api/price");
         const d = await r.json();
-        setPrice(d.price);
+
+        console.log("PRICE API:", d);
+
+        if (d?.price) {
+          setPrice(d.price);
+        }
       } catch (e) {
-        console.error(e);
+        console.error("PRICE ERROR:", e);
       }
     };
 
