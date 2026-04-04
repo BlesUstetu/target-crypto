@@ -8,6 +8,7 @@ export default function useWS() {
     const run = async () => {
       try {
         console.log("FETCH PRICE...");
+        console.log("RESULT:", d);
 
         const r = await fetch("/api/price");
         const d = await r.json();
