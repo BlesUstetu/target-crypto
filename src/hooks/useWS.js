@@ -8,58 +8,48 @@ export default function useWS() {
     let ws;
     let fallback;
 
-    const connectWS = () => {
-      console.log("WS CONNECT");
+    const startFallback = () => {
+      if (fallback) return;
 
+      console.log("REST FALLBACK ACTIVE 🔄");
+
+      fallback = setInterval(async () => {
+        try {
+          const r = await fetch("/api/price");
+          const d = await r.json();
+          setPrice(d.price);
+        } catch (err) {
+          console.error("Fallback error:", err);
+        }
+      }, 2000);
+    };
+
+    const connectWS = () => {
       try {
         ws = new WebSocket("wss://stream.binance.com/ws/btcusdt@trade");
 
         ws.onopen = () => {
           console.log("WS OPEN ✅");
-
-          // stop fallback kalau WS berhasil
           if (fallback) clearInterval(fallback);
         };
 
         ws.onmessage = (e) => {
           const d = JSON.parse(e.data);
-          const price = parseFloat(d.p);
-
-          setPrice(price);
+          setPrice(parseFloat(d.p));
         };
 
         ws.onerror = () => {
-          console.log("WS FAILED ❌ → fallback REST");
+          console.log("WS FAIL → fallback");
           ws.close();
           startFallback();
         };
 
         ws.onclose = () => {
-          console.log("WS CLOSED → retry...");
           setTimeout(connectWS, 3000);
         };
-      } catch (e) {
+      } catch {
         startFallback();
       }
-    };
-
-    const startFallback = () => {
-      if (fallback) return;
-
-      console.log("START REST FALLBACK 🔄");
-
-      fallback = setInterval(async () => {
-        try {
-          const r = await fetch(
-            "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-          );
-          const d = await r.json();
-
-          setPrice(parseFloat(d.price));
-        } catch (err) {
-          console.error("REST ERROR:", err);
-        }
-      }, 2000);
     };
 
     connectWS();
