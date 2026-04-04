@@ -5,10 +5,11 @@ export default function useWS() {
   const setPrice = useStore((s) => s.setPrice);
 
   useEffect(() => {
+    let intervalId; // ✅ declare dulu
+
     const run = async () => {
       try {
         console.log("FETCH PRICE...");
-        console.log("RESULT:", d);
 
         const r = await fetch("/api/price");
         const d = await r.json();
@@ -24,8 +25,11 @@ export default function useWS() {
     };
 
     run();
-    const i = setInterval(run, 2000);
 
-    return () => clearInterval(i);
+    intervalId = setInterval(run, 2000); // ✅ assign setelah declare
+
+    return () => {
+      if (intervalId) clearInterval(intervalId); // ✅ aman
+    };
   }, [setPrice]);
 }
