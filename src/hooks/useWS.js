@@ -10,12 +10,18 @@ export default function useWS() {
     const connect = () => {
       console.log("WS CONNECT");
 
-      ws = new WebSocket("wss://stream.binance.com:9443/ws/btcusdt@trade");
+      ws = new WebSocket("wss://stream.binance.com/ws/btcusdt@trade");
+
+      ws.onopen = () => {
+        console.log("WS OPEN ✅");
+      };
 
       ws.onmessage = (e) => {
         try {
           const d = JSON.parse(e.data);
           const price = parseFloat(d.p);
+
+          console.log("PRICE:", price); // 🔥 DEBUG
 
           setPrice(price);
         } catch (err) {
@@ -36,7 +42,6 @@ export default function useWS() {
 
     connect();
 
-    // 🔥 CLEANUP WAJIB
     return () => {
       if (ws) ws.close();
     };
