@@ -1,6 +1,3 @@
-export const config = {
-  runtime: "edge"
-};
 export default async function handler(req, res) {
   try {
     const r = await fetch(
