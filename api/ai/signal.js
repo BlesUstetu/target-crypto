@@ -1,71 +1,170 @@
 // ===============================
-// FINAL AI SIGNAL ENGINE (PRO)
+// PRO TRADING ENGINE (MTF + WHALE + LIQUIDATION)
+// Vercel-safe (no WS)
 // ===============================
 
+const BASE = "https://fapi.binance.com";
+
+// ===============================
+// MAIN HANDLER
+// ===============================
 export default async function handler(req, res) {
   try {
     // ===============================
-    // 1. GET PRICE (REAL)
+    // 1) PRICE (LAST + MARK + INDEX)
     // ===============================
-    const priceRes = await fetch(
-      "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-    );
-    const priceJson = await priceRes.json();
-    const price = parseFloat(priceJson.price);
+    const [lastRes, markRes, indexRes] = await Promise.all([
+      fetch(`${BASE}/fapi/v1/ticker/price?symbol=BTCUSDT`),
+      fetch(`${BASE}/fapi/v1/premiumIndex?symbol=BTCUSDT`),
+      fetch(`${BASE}/fapi/v1/premiumIndex?symbol=BTCUSDT`),
+    ]);
 
-    if (!price || isNaN(price)) {
-      throw new Error("Invalid price");
+    const lastJson = await lastRes.json();
+    const markJson = await markRes.json();
+    const indexJson = await indexRes.json();
+
+    const price = parseFloat(lastJson.price);
+    const markPrice = parseFloat(markJson.markPrice);
+    const indexPrice = parseFloat(indexJson.indexPrice);
+
+    // ===============================
+    // 2) ORDERFLOW (DEPTH)
+    // ===============================
+    const depthRes = await fetch(
+      `${BASE}/fapi/v1/depth?symbol=BTCUSDT&limit=50`
+    );
+    const depth = await depthRes.json();
+
+    const bids = depth.bids || [];
+    const asks = depth.asks || [];
+
+    const bidVol = bids.reduce((s, b) => s + parseFloat(b[1]), 0);
+    const askVol = asks.reduce((s, a) => s + parseFloat(a[1]), 0);
+
+    const total = bidVol + askVol;
+
+    const delta = {
+      buy: Math.round((bidVol / total) * 100),
+      sell: Math.round((askVol / total) * 100),
+    };
+
+    // ===============================
+    // 3) WHALE DETECTION (aggTrades)
+    // ===============================
+    const tradesRes = await fetch(
+      `${BASE}/fapi/v1/aggTrades?symbol=BTCUSDT&limit=200`
+    );
+    const trades = await tradesRes.json();
+
+    let whaleBuy = 0;
+    let whaleSell = 0;
+
+    for (const t of trades) {
+      const qty = parseFloat(t.q);
+      const isSell = t.m;
+
+      // threshold whale (adjustable)
+      if (qty > 5) {
+        if (isSell) whaleSell += qty;
+        else whaleBuy += qty;
+      }
     }
 
-    // ===============================
-    // 2. DELTA (Sementara Random)
-    // ===============================
-    const delta = generateDelta();
+    const whale = {
+      buy: whaleBuy,
+      sell: whaleSell,
+      bias: whaleBuy > whaleSell ? "LONG" : "SHORT",
+    };
 
     // ===============================
-    // 3. AI ANALYSIS
+    // 4) VOLATILITY (LIQUIDATION PROXY)
+    // ===============================
+    const klineRes = await fetch(
+      `${BASE}/fapi/v1/klines?symbol=BTCUSDT&interval=1m&limit=20`
+    );
+    const klines = await klineRes.json();
+
+    const closes = klines.map(k => parseFloat(k[4]));
+    const high = Math.max(...closes);
+    const low = Math.min(...closes);
+
+    const volatility = ((high - low) / price) * 100;
+
+    const liquidation = {
+      risk: volatility > 0.5 ? "HIGH" : "NORMAL",
+      volatility,
+    };
+
+    // ===============================
+    // 5) MULTI-TIMEFRAME (SIMPLIFIED)
+    // ===============================
+    const mtf = {
+      short: price > markPrice ? "BULLISH" : "BEARISH",
+      mid: markPrice > indexPrice ? "BULLISH" : "BEARISH",
+      long: delta.buy > delta.sell ? "BULLISH" : "BEARISH",
+    };
+
+    // ===============================
+    // 6) SCORING ENGINE (PRO)
+    // ===============================
+    let score = 0;
+
+    if (delta.buy > 60) score += 2;
+    if (delta.sell > 60) score -= 2;
+
+    if (whale.bias === "LONG") score += 2;
+    if (whale.bias === "SHORT") score -= 2;
+
+    if (mtf.short === "BULLISH") score += 1;
+    else score -= 1;
+
+    if (mtf.mid === "BULLISH") score += 1;
+    else score -= 1;
+
+    if (liquidation.risk === "HIGH") score *= 0.5;
+
+    // ===============================
+    // 7) FINAL SIGNAL
     // ===============================
     let signal;
 
-    try {
-      signal = await getAI(price, delta);
-      signal.source = "AI";
-    } catch (err) {
-      signal = fallback(price, delta);
-      signal.source = "FALLBACK";
-      signal.error = err.message;
+    if (score >= 3) {
+      signal = {
+        bias: "LONG",
+        confidence: Math.min(90, 60 + score * 5),
+        entry: price,
+        tp: price * 1.012,
+        sl: price * 0.995,
+      };
+    } else if (score <= -3) {
+      signal = {
+        bias: "SHORT",
+        confidence: Math.min(90, 60 + Math.abs(score) * 5),
+        entry: price,
+        tp: price * 0.988,
+        sl: price * 1.005,
+      };
+    } else {
+      signal = {
+        bias: "WAIT",
+        confidence: 50,
+        entry: price,
+        tp: price,
+        sl: price,
+      };
     }
 
     // ===============================
-    // 4. VALIDASI ANGKA (ANTI 0)
-    // ===============================
-    signal.entry = safeNumber(signal.entry, price);
-    signal.tp = safeNumber(signal.tp, price * 1.01);
-    signal.sl = safeNumber(signal.sl, price * 0.99);
-    signal.confidence = clamp(signal.confidence, 0, 100);
-
-    // ===============================
-    // 5. RISK CONTROL
-    // ===============================
-    signal = applyRisk(signal, price);
-
-    // ===============================
-    // 6. SYNC DELTA vs SIGNAL (ANTI KONFLIK)
-    // ===============================
-    if (delta.buy > 70 && signal.bias === "SHORT") {
-      signal.bias = "LONG";
-    }
-
-    if (delta.sell > 70 && signal.bias === "LONG") {
-      signal.bias = "SHORT";
-    }
-
-    // ===============================
-    // 7. RESPONSE FINAL
+    // RESPONSE
     // ===============================
     return res.status(200).json({
       price,
+      markPrice,
+      indexPrice,
       delta,
+      whale,
+      liquidation,
+      mtf,
       signal,
       timestamp: Date.now(),
     });
@@ -75,124 +174,4 @@ export default async function handler(req, res) {
       error: err.message,
     });
   }
-}
-
-// ===============================
-// AI (OPENROUTER)
-// ===============================
-async function getAI(price, delta) {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) throw new Error("No API key");
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
-
-  const prompt = `
-Return ONLY JSON:
-{
-  "bias": "LONG or SHORT",
-  "confidence": number (0-100),
-  "entry": number,
-  "tp": number,
-  "sl": number
-}
-
-Price: ${price}
-Buy: ${delta.buy}
-Sell: ${delta.sell}
-`;
-
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    signal: controller.signal,
-    body: JSON.stringify({
-      model: "openai/gpt-4o-mini",
-      temperature: 0.2,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-
-  clearTimeout(timeout);
-
-  if (!res.ok) throw new Error("AI request failed");
-
-  const json = await res.json();
-  let text = json?.choices?.[0]?.message?.content || "";
-
-  text = text.replace(/```json|```/g, "").trim();
-
-  const parsed = JSON.parse(text);
-
-  return {
-    bias: parsed.bias,
-    confidence: Number(parsed.confidence),
-    entry: Number(parsed.entry),
-    tp: Number(parsed.tp),
-    sl: Number(parsed.sl),
-  };
-}
-
-// ===============================
-// FALLBACK ENGINE
-// ===============================
-function fallback(price, delta) {
-  if ((delta.buy || 50) > 60) {
-    return {
-      bias: "LONG",
-      confidence: 60,
-      entry: price,
-      tp: price * 1.01,
-      sl: price * 0.995,
-    };
-  }
-
-  return {
-    bias: "SHORT",
-    confidence: 60,
-    entry: price,
-    tp: price * 0.99,
-    sl: price * 1.005,
-  };
-}
-
-// ===============================
-// DELTA (SIMULASI)
-// ===============================
-function generateDelta() {
-  const buy = Math.floor(Math.random() * 100);
-  const sell = 100 - buy;
-  return { buy, sell };
-}
-
-// ===============================
-// HELPERS
-// ===============================
-function safeNumber(val, fallback) {
-  const num = Number(val);
-  return isNaN(num) || num === 0 ? fallback : num;
-}
-
-function clamp(val, min, max) {
-  return Math.min(Math.max(val, min), max);
-}
-
-// ===============================
-// RISK CONTROL
-// ===============================
-function applyRisk(signal, price) {
-  const maxTP = price * 1.02;
-  const minTP = price * 1.005;
-
-  const maxSL = price * 1.01;
-  const minSL = price * 0.99;
-
-  return {
-    ...signal,
-    tp: Math.min(Math.max(signal.tp, minTP), maxTP),
-    sl: Math.min(Math.max(signal.sl, minSL), maxSL),
-  };
 }
